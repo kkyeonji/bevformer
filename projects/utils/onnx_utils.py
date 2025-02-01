@@ -75,6 +75,20 @@ def get_tensor_input(inputs, tensor_inputs = {}, tensor_inputs_ort_form = {}, na
 
     return tensor_inputs, tensor_inputs_ort_form
 
-def onnx_export(model, dataloader, logger=None):
+def onnx_export(model, dataloader, onnx_file_path, logger=None):
+    data = dataloader.collate_fn(dataset[demo_idx])
+    tensor_input = get_tensor_input(data)
+
+    torch.onnx.export(
+        model,
+        args = (tensor_input, {}),
+        f = onnx_file_path,
+        input_names = list(tensor_input.keys()),
+        opset_version = 16,
+        verbose = True,
+    )
+
+    onnx_model = onnx.load(onnx_file_path)
+    onnx.checker.check_model (onnx_model)
 
     return
