@@ -24,6 +24,7 @@ from mmdet.datasets import replace_ImageToTensor
 import time
 import os.path as osp
 from projects.utils.onnx_utils import onnx_export
+from projects.utils.test_utils import custom_single_gpu_test
 
 
 def parse_args():
@@ -131,18 +132,16 @@ def main():
     elif hasattr(dataset, 'PALETTE'):
         # segmentation dataset has `PALETTE` attribute
         model.PALETTE = dataset.PALETTE
-    breakpoint()
+
     model = MMDataParallel(model, device_ids=[0])
-    outputs = single_gpu_test(model, data_loader, cfg.show, cfg.show_dir)
+    # outputs = custom_single_gpu_test(model, data_loader)
     onnx_export(model, data_loader, cfg.onnx_file_path)
 
+    # TODO
     # onnx export
     # compare output with torch model
     # evaluation (+ inference time, # of parameters comparison, input size?)
     # debugging tool?
-
-    outputs = custom_multi_gpu_test(model, data_loader, args.tmpdir,
-                                    args.gpu_collect)
 
     #mmcv.dump(outputs['bbox_results'], args.out)
     kwargs = {} if args.eval_options is None else args.eval_options
