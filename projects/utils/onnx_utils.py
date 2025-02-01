@@ -3,6 +3,7 @@ from torch import nn
 import onnx
 import onnxruntime
 import numpy as np
+import mmcv
 
 
 def to_numpy(x):
@@ -57,33 +58,42 @@ def add_value(dict_out, key_list, value):
         dict_out[key] = {}
         add_value(dict_out[key], key_list[1:], value)
 
-def get_tensor_input(inputs, tensor_inputs = {}, tensor_inputs_ort_form = {}, name = []):
+def get_tensor_input(inputs, tensor_inputs = {}, non_tensor_inputs = {},
+                    tensor_inputs_ort_form = {}, name = []):
     # TODO : reference
-    it = inputs.item() if isinstance(inputs, dict) else enumerate(inputs)
+    it = inputs.items() if isinstance(inputs, dict) else enumerate(inputs)
     for k1, d1 in it:
         if isinstance(d1, torch.Tensor):
             name.append(str(k1))
             tensor_inputs_ort_form['.'.join(name)] = d1
             add_value(tensor_inputs, name, d1)
             name.pop()
-        elif isinstance(d1, dict): # or list?
+        elif isinstance(d1, dict) or isinstance(d1, list): # or list?
             name.append(k1)
-            get_tensor_input(d1, tensor_inputs, tensor_inputs_ort_form, name)
-        # TODO : else
+            get_tensor_input(d1, tensor_inputs, non_tensor_inputs,
+                            tensor_inputs_ort_form, name)
+        elif isinstance(d1, mmcv.parallel.data_container.DataContainer):
+            get_tensor_input(d1.data, tensor_inputs, non_tensor_inputs,
+                            tensor_inputs_ort_form, name)
+        else:
+            name.append(str(k1))
+            add_value(non_tensor_inputs, name, d1)
+            name.pop()
+
     if len(name) != 0:
         name.pop()
 
-    return tensor_inputs, tensor_inputs_ort_form
+    return tensor_inputs, non_tensor_inputs, tensor_inputs_ort_form
 
 def onnx_export(model, dataloader, onnx_file_path, logger=None):
-    data = dataloader.collate_fn(dataset[demo_idx])
-    tensor_input = get_tensor_input(data)
-
+    data = next(iter(dataloader))
+    tensor_inputs, non_tensor_inputs, tensor_inputs_ort_form = get_tensor_input(data)
+    breakpoint()
     torch.onnx.export(
         model,
-        args = (tensor_input, {}),
+        args = (tensor_inputs, {}),
         f = onnx_file_path,
-        input_names = list(tensor_input.keys()),
+        input_names = list(tensor_inputs.keys()),
         opset_version = 16,
         verbose = True,
     )
