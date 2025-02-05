@@ -133,7 +133,7 @@ def main():
         # segmentation dataset has `PALETTE` attribute
         model.PALETTE = dataset.PALETTE
 
-    model = MMDataParallel(model, device_ids=[0])
+    # model = MMDataParallel(model, device_ids=[0])
     # outputs = custom_single_gpu_test(model, data_loader)
     onnx_export(model, data_loader, cfg.onnx_file_path)
 

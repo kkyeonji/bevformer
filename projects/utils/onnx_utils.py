@@ -6,6 +6,29 @@ import numpy as np
 import mmcv
 
 
+class OnnxWrapper(nn.Module):
+        def __init__(self, model, non_tensor_inputs):
+            super().__init__()
+            model.eval()
+            model.cuda()
+            self.model = model
+
+            # TODO : load non tenosrs as class var
+            self.non_tensor_inputs = non_tensor_inputs
+            # for key, val in non_tensor_inputs.items():
+            #     setattr(self, f'key', val)
+
+        def forward(self, tensor_inputs):
+            tensor_inputs.update(self.non_tensor_inputs)
+            return self.model.forward(return_loss=False, **tensor_inputs)
+        
+        def post_processing(onnx_output):
+            # Modify data format from onnx from to torch form
+            torch_output = {}
+            # TODO
+            return torch_output
+        
+
 def to_numpy(x):
     # Transfer tensor to numpy.
     # If list/dict of tensor included, iteratively transfer elements to numpy.
@@ -68,7 +91,7 @@ def get_tensor_input(inputs, tensor_inputs = {}, non_tensor_inputs = {},
             tensor_inputs_ort_form['.'.join(name)] = d1
             add_value(tensor_inputs, name, d1)
             name.pop()
-        elif isinstance(d1, dict) or isinstance(d1, list): # or list?
+        elif isinstance(d1, dict) or isinstance(d1, list):
             name.append(k1)
             get_tensor_input(d1, tensor_inputs, non_tensor_inputs,
                             tensor_inputs_ort_form, name)
@@ -87,10 +110,12 @@ def get_tensor_input(inputs, tensor_inputs = {}, non_tensor_inputs = {},
 
 def onnx_export(model, dataloader, onnx_file_path, logger=None):
     data = next(iter(dataloader))
-    tensor_inputs, non_tensor_inputs, tensor_inputs_ort_form = get_tensor_input(data)
-    breakpoint()
+    tensor_inputs, non_tensor_inputs, _ = get_tensor_input(data)
+    
+    onnx_wrapper = OnnxWrapper(model, non_tensor_inputs)
+
     torch.onnx.export(
-        model,
+        onnx_wrapper,
         args = (tensor_inputs, {}),
         f = onnx_file_path,
         input_names = list(tensor_inputs.keys()),
@@ -102,3 +127,4 @@ def onnx_export(model, dataloader, onnx_file_path, logger=None):
     onnx.checker.check_model (onnx_model)
 
     return
+
