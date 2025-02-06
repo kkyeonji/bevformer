@@ -82,24 +82,25 @@ def add_value(dict_out, key_list, value):
         add_value(dict_out[key], key_list[1:], value)
 
 def get_tensor_input(inputs, tensor_inputs = {}, non_tensor_inputs = {},
-                    tensor_inputs_ort_form = {}, name = []):
+                    tensor_inputs_ort_form = {}, name = [], device = 'cuda'):
     # TODO : reference
     it = inputs.items() if isinstance(inputs, dict) else enumerate(inputs)
     for k1, d1 in it:
         if isinstance(d1, torch.Tensor):
-            name.append(str(k1))
-            tensor_inputs_ort_form['.'.join(name)] = d1
-            add_value(tensor_inputs, name, d1)
+            name.append(k1)
+            data_key = '.'.join(str(n) for n in name)
+            tensor_inputs_ort_form[data_key] = d1
+            add_value(tensor_inputs, name, d1.to(device))
             name.pop()
         elif isinstance(d1, dict) or isinstance(d1, list):
             name.append(k1)
             get_tensor_input(d1, tensor_inputs, non_tensor_inputs,
-                            tensor_inputs_ort_form, name)
+                            tensor_inputs_ort_form, name, device)
         elif isinstance(d1, mmcv.parallel.data_container.DataContainer):
             get_tensor_input(d1.data, tensor_inputs, non_tensor_inputs,
-                            tensor_inputs_ort_form, name)
+                            tensor_inputs_ort_form, name, device)
         else:
-            name.append(str(k1))
+            name.append(k1)
             add_value(non_tensor_inputs, name, d1)
             name.pop()
 
@@ -108,18 +109,26 @@ def get_tensor_input(inputs, tensor_inputs = {}, non_tensor_inputs = {},
 
     return tensor_inputs, non_tensor_inputs, tensor_inputs_ort_form
 
-def onnx_export(model, dataloader, onnx_file_path, logger=None):
+def onnx_export(model, dataloader, onnx_file_path, device, logger=None):
     data = next(iter(dataloader))
-    tensor_inputs, non_tensor_inputs, _ = get_tensor_input(data)
-    
+    tensor_inputs, non_tensor_inputs, _ = get_tensor_input(data, device = device)
+    # tensor_inputs['img']['0'].shape = [1, 6, 3, 736, 1280]
+    # non_tensor_inputs['img_metas'][0][0].keys() =
+    #  ['filename', 'ori_shape', 'img_shape', 'lidar2img', 'lidar2cam',
+    #  'pad_shape', 'scale_factor', 'flip', 'pcd_horizontal_flip',
+    #  'pcd_vertical_flip', 'box_mode_3d', 'box_type_3d', 'img_norm_cfg',
+    #  'sample_idx', 'prev_idx', 'next_idx', 'pcd_scale_factor', 'pts_filename',
+    #  'scene_token', 'can_bus']
     onnx_wrapper = OnnxWrapper(model, non_tensor_inputs)
+    output = onnx_wrapper(tensor_inputs)
+    breakpoint()
 
     torch.onnx.export(
         onnx_wrapper,
         args = (tensor_inputs, {}),
         f = onnx_file_path,
         input_names = list(tensor_inputs.keys()),
-        opset_version = 16,
+        # opset_version = 16,
         verbose = True,
     )
 

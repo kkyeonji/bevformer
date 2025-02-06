@@ -119,6 +119,11 @@ class PerceptionTransformer(BaseModule):
         bev_queries = bev_queries.unsqueeze(1).repeat(1, bs, 1)
         bev_pos = bev_pos.flatten(2).permute(2, 0, 1)
 
+        # get dict if data went through get_tensor_input
+        # this is because list is not supported for torch.onnx
+        if isinstance(kwargs['img_metas'], dict):
+            kwargs['img_metas'] = list(kwargs['img_metas'].values())
+
         # obtain rotation angle and shift with ego motion
         delta_x = np.array([each['can_bus'][0]
                            for each in kwargs['img_metas']])

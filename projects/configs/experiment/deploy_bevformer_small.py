@@ -8,3 +8,4 @@ checkpoint = "/home/ubuntu/workspace/BEVFormer/ckpts/r101_dcn_fcos3d_pretrain.pt
 fuse_conv_bn = False
 show = True
 show_dir = "./onnx_output"
+device = 'cuda'

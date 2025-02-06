@@ -81,7 +81,6 @@ class BEVFormer(MVXTwoStageDetector):
                 img = img.reshape(B * N, C, H, W)
             if self.use_grid_mask:
                 img = self.grid_mask(img)
-
             img_feats = self.img_backbone(img)
             if isinstance(img_feats, dict):
                 img_feats = list(img_feats.values())
@@ -234,10 +233,11 @@ class BEVFormer(MVXTwoStageDetector):
         return losses
 
     def forward_test(self, img_metas, img=None, **kwargs):
-        for var, name in [(img_metas, 'img_metas')]:
-            if not isinstance(var, list):
-                raise TypeError('{} must be a list, but got {}'.format(
-                    name, type(var)))
+        # for var, name in [(img_metas, 'img_metas')]:
+        #     if not isinstance(var, list):
+        #         raise TypeError('{} must be a list, but got {}'.format(
+        #             name, type(var)))
+        
         img = [img] if img is None else img
 
         if img_metas[0][0]['scene_token'] != self.prev_frame_info['scene_token']:

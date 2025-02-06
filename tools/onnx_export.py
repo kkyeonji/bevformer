@@ -135,7 +135,7 @@ def main():
 
     # model = MMDataParallel(model, device_ids=[0])
     # outputs = custom_single_gpu_test(model, data_loader)
-    onnx_export(model, data_loader, cfg.onnx_file_path)
+    onnx_export(model, data_loader, cfg.onnx_file_path, cfg.device)
 
     # TODO
     # onnx export
