@@ -233,11 +233,11 @@ class BEVFormer(MVXTwoStageDetector):
         return losses
 
     def forward_test(self, img_metas, img=None, **kwargs):
-        # for var, name in [(img_metas, 'img_metas')]:
-        #     if not isinstance(var, list):
-        #         raise TypeError('{} must be a list, but got {}'.format(
-        #             name, type(var)))
-        
+        for var, name in [(img_metas, 'img_metas')]:
+            if not isinstance(var, list):
+                raise TypeError('{} must be a list, but got {}'.format(
+                    name, type(var)))
+
         img = [img] if img is None else img
 
         if img_metas[0][0]['scene_token'] != self.prev_frame_info['scene_token']:
