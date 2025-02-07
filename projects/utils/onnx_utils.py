@@ -7,20 +7,17 @@ import mmcv
 
 
 class OnnxWrapper(nn.Module):
-        def __init__(self, model, non_tensor_inputs):
+        def __init__(self, model, meta_data):
             super().__init__()
             model.eval()
             model.cuda()
             self.model = model
 
-            # TODO : load non tenosrs as class var
-            self.non_tensor_inputs = non_tensor_inputs
-            # for key, val in non_tensor_inputs.items():
-            #     setattr(self, f'key', val)
+            self.meta_data = meta_data
 
-        def forward(self, tensor_inputs):
-            tensor_inputs.update(self.non_tensor_inputs)
-            return self.model.forward(return_loss=False, **tensor_inputs)
+        def forward(self, inputs):
+            inputs.update(self.meta_data)
+            return self.model.forward(return_loss=False, **inputs)
         
         def post_processing(onnx_output):
             # Modify data format from onnx from to torch form
@@ -109,9 +106,10 @@ def get_tensor_input(inputs, tensor_inputs = {}, non_tensor_inputs = {},
 
     return tensor_inputs, non_tensor_inputs, tensor_inputs_ort_form
 
+
 def onnx_export(model, dataloader, onnx_file_path, device, logger=None):
     data = next(iter(dataloader))
-    tensor_inputs, non_tensor_inputs, _ = get_tensor_input(data, device = device)
+    tensor_inputs, non_tensor_inputs, tensor_inputs_ort_form = get_tensor_input(data, device = device)
     # tensor_inputs['img']['0'].shape = [1, 6, 3, 736, 1280]
     # non_tensor_inputs['img_metas'][0][0].keys() =
     #  ['filename', 'ori_shape', 'img_shape', 'lidar2img', 'lidar2cam',
@@ -119,15 +117,15 @@ def onnx_export(model, dataloader, onnx_file_path, device, logger=None):
     #  'pcd_vertical_flip', 'box_mode_3d', 'box_type_3d', 'img_norm_cfg',
     #  'sample_idx', 'prev_idx', 'next_idx', 'pcd_scale_factor', 'pts_filename',
     #  'scene_token', 'can_bus']
-    onnx_wrapper = OnnxWrapper(model, non_tensor_inputs)
-    output = onnx_wrapper(tensor_inputs)
+    onnx_wrapper = OnnxWrapper(model, data['img_metas'])
+    output = onnx_wrapper(data['img'])
     breakpoint()
 
     torch.onnx.export(
         onnx_wrapper,
-        args = (tensor_inputs, {}),
+        args = (data['img'], {}),
         f = onnx_file_path,
-        input_names = list(tensor_inputs.keys()),
+        input_names = list(tensor_inputs_ort_form.keys()),
         # opset_version = 16,
         verbose = True,
     )
