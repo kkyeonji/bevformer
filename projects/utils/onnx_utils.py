@@ -140,6 +140,11 @@ def get_ort_inputs(inputs, ort_inputs = {}, name = []):
             data_key = '.'.join(str(n) for n in name)
             ort_inputs[data_key] = d1
             name.pop()
+        # elif isinstance(d1, np.ndarry):
+        #     name.append(k1)
+        #     data_key = '.'.join(str(n) for n in name)
+        #     ort_inputs[data_key] = to_tensor(d1)
+        #     name.pop()
         elif isinstance(d1, dict) or isinstance(d1, list):
             name.append(k1)
             get_ort_inputs(d1, ort_inputs, name)
@@ -171,9 +176,10 @@ def onnx_export(model, dataloader, save_dir, chk_pth, device, logger=None):
     #  'scene_token', 'can_bus']
     input = get_continer_data(batch['img'])
     meta_data = get_continer_data(batch['img_metas'])
-    meta_data[0][0].pop('box_type_3d', None)
     with torch.no_grad():
         onnx_wrapper = OnnxWrapper(model, meta_data)
+        # if you want to re-use input, you have to copy it.
+        # it modified while forward()
         output = onnx_wrapper(copy.deepcopy(input))
 
         torch.onnx.export(
@@ -190,4 +196,95 @@ def onnx_export(model, dataloader, save_dir, chk_pth, device, logger=None):
     onnx.checker.check_model (onnx_model)
 
     return
+
+from mmdet3d.core import bbox3d2result
+
+class TestWrapper(nn.Module):
+    def __init__(self, model, meta_data):
+        super().__init__()
+        model.eval()
+        model.cuda()
+        self.model = model
+
+        self.meta_data = meta_data
+
+    def preprocess(self, img=None):
+        img_metas = self.meta_data
+        for var, name in [(img_metas, 'img_metas')]:
+            if not isinstance(var, list):
+                raise TypeError('{} must be a list, but got {}'.format(
+                    name, type(var)))
+
+        img = [img] if img is None else img
+
+        if img_metas[0][0]['scene_token'] != self.model.prev_frame_info['scene_token']:
+            # the first sample of each scene is truncated
+            self.model.prev_frame_info['prev_bev'] = None
+        # update idx
+        self.model.prev_frame_info['scene_token'] = img_metas[0][0]['scene_token']
+
+        # do not use temporal information
+        if not self.model.video_test_mode:
+            self.model.prev_frame_info['prev_bev'] = None
+
+        # Get the delta of ego position and angle between two timestamps.
+        tmp_pos = copy.deepcopy(img_metas[0][0]['can_bus'][:3])
+        tmp_angle = copy.deepcopy(img_metas[0][0]['can_bus'][-1])
+        if self.model.prev_frame_info['prev_bev'] is not None:
+            img_metas[0][0]['can_bus'][:3] -= self.model.prev_frame_info['prev_pos']
+            img_metas[0][0]['can_bus'][-1] -= self.model.prev_frame_info['prev_angle']
+        else:
+            img_metas[0][0]['can_bus'][-1] = 0
+            img_metas[0][0]['can_bus'][:3] = 0
+
+        img_feats = self.model.extract_feat(img=img[0], img_metas=img_metas[0])
+
+        return img_feats
+
+    def forward(self, img, img_feats):
+        img_metas = self.meta_data
+
+        outs = self.model.pts_bbox_head(img_feats, img_metas[0],
+                                        prev_bev=self.model.prev_frame_info['prev_bev'])
+
+        bbox_list = self.model.pts_bbox_head.get_bboxes(
+            outs, img_metas, rescale=False)
+        bbox_results = [
+            bbox3d2result(bboxes, scores, labels)
+            for bboxes, scores, labels in bbox_list
+        ]
+        return outs['bev_embed'], bbox_results
+
+def test_export(model, dataloader, save_dir, chk_pth, device, logger=None):
+    save_dir = Path(save_dir)
+    chk_pth = Path(chk_pth)
+    if not save_dir.is_dir():
+        save_dir.mkdir()
+    onnx_save_pth = save_dir / chk_pth.stem
+
+    batch = next(iter(dataloader))
+    batch = load_gpu(batch)
+    ort_inputs = get_ort_inputs(batch)
+    
+    input = get_continer_data(batch['img'])
+    meta_data = get_continer_data(batch['img_metas']) 
+    with torch.no_grad():
+        onnx_wrapper = TestWrapper(model, to_tensor(meta_data))
+        img_feats = onnx_wrapper.preprocess(copy.deepcopy(input))
+
+        torch.onnx.export(
+            onnx_wrapper,
+            args = (input, img_feats, {}),
+            f = onnx_save_pth,
+            # input_names = list(ort_inputs.keys()),
+            # opset_version = 16,
+            verbose = True,
+        )
+    print("Onnx Export Suceed")
+
+    onnx_model = onnx.load(onnx_save_pth)
+    onnx.checker.check_model (onnx_model)
+
+    return
+
 

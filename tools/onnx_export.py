@@ -23,7 +23,7 @@ from projects.mmdet3d_plugin.bevformer.apis.test import custom_multi_gpu_test
 from mmdet.datasets import replace_ImageToTensor
 import time
 import os.path as osp
-from projects.utils.onnx_utils import onnx_export
+from projects.utils.onnx_utils import onnx_export, test_export
 from projects.utils.test_utils import custom_single_gpu_test
 
 
@@ -135,7 +135,9 @@ def main():
 
     # model = MMDataParallel(model, device_ids=[0])
     # outputs = custom_single_gpu_test(model, data_loader)
-    onnx_export(model, data_loader, cfg.onnx_file_dir, cfg.checkpoint, cfg.device)
+    # onnx_export(model, data_loader, cfg.onnx_file_dir, cfg.checkpoint, cfg.device)
+    test_export(model, data_loader, cfg.onnx_file_dir, cfg.checkpoint, cfg.device)
+
 
     # TODO
     # onnx export

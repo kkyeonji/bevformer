@@ -500,7 +500,10 @@ class BEVFormerHead(DETRHead):
             bboxes[:, 2] = bboxes[:, 2] - bboxes[:, 5] * 0.5
 
             code_size = bboxes.shape[-1]
-            bboxes = img_metas[i]['box_type_3d'](bboxes, code_size)
+            # object below is not supported from torch.onnx
+            # <mmdet3d.core.bbox.structures.lidar_box3d.LiDARInstance3DBoxes>
+            # return bboxes as torch.tensor instead
+            # bboxes = img_metas[i]['box_type_3d'](bboxes, code_size)
             scores = preds['scores']
             labels = preds['labels']
 
