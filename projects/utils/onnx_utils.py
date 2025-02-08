@@ -4,7 +4,9 @@ import onnx
 import onnxruntime
 import numpy as np
 import mmcv
-
+import os
+from pathlib import Path
+import copy
 
 class OnnxWrapper(nn.Module):
         def __init__(self, model, meta_data):
@@ -150,7 +152,13 @@ def get_ort_inputs(inputs, ort_inputs = {}, name = []):
 
     return ort_inputs
 
-def onnx_export(model, dataloader, onnx_file_path, device, logger=None):
+def onnx_export(model, dataloader, save_dir, chk_pth, device, logger=None):
+    save_dir = Path(save_dir)
+    chk_pth = Path(chk_pth)
+    if not save_dir.is_dir():
+        save_dir.mkdir()
+    onnx_save_pth = save_dir / chk_pth.stem
+
     batch = next(iter(dataloader))
     batch = load_gpu(batch)
     ort_inputs = get_ort_inputs(batch)
@@ -163,22 +171,22 @@ def onnx_export(model, dataloader, onnx_file_path, device, logger=None):
     #  'scene_token', 'can_bus']
     input = get_continer_data(batch['img'])
     meta_data = get_continer_data(batch['img_metas'])
+    meta_data[0][0].pop('box_type_3d', None)
+    with torch.no_grad():
+        onnx_wrapper = OnnxWrapper(model, meta_data)
+        output = onnx_wrapper(copy.deepcopy(input))
 
-    onnx_wrapper = OnnxWrapper(model, meta_data)
-    output = onnx_wrapper(input)
-    breakpoint()
-    torch.onnx.export(
-        onnx_wrapper,
-        args = (input, {}),
-        f = onnx_file_path,
-        input_names = list(ort_inputs.keys()),
-        # opset_version = 16,
-        verbose = False,
-    )
+        torch.onnx.export(
+            onnx_wrapper,
+            args = (input, {}),
+            f = onnx_save_pth,
+            input_names = list(ort_inputs.keys()),
+            # opset_version = 16,
+            verbose = True,
+        )
     print("Onnx Export Suceed")
-    breakpoint()
 
-    onnx_model = onnx.load(onnx_file_path)
+    onnx_model = onnx.load(onnx_save_pth)
     onnx.checker.check_model (onnx_model)
 
     return

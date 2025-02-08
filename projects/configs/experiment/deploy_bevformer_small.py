@@ -2,9 +2,9 @@ _base_ = [
     '../bevformer/bevformer_small.py',
 ]
 
-onnx_file_path = "./onnx_output"
+onnx_file_dir = "./onnx_output"
 seed = 0
-checkpoint = "/home/ubuntu/workspace/BEVFormer/ckpts/r101_dcn_fcos3d_pretrain.pth"
+checkpoint = "/home/ubuntu/workspace/BEVFormer/ckpts/bevformer_small_epoch_24.pth"
 fuse_conv_bn = False
 show = True
 show_dir = "./onnx_output"
