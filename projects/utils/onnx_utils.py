@@ -140,11 +140,6 @@ def get_ort_inputs(inputs, ort_inputs = {}, name = []):
             data_key = '.'.join(str(n) for n in name)
             ort_inputs[data_key] = d1
             name.pop()
-        # elif isinstance(d1, np.ndarry):
-        #     name.append(k1)
-        #     data_key = '.'.join(str(n) for n in name)
-        #     ort_inputs[data_key] = to_tensor(d1)
-        #     name.pop()
         elif isinstance(d1, dict) or isinstance(d1, list):
             name.append(k1)
             get_ort_inputs(d1, ort_inputs, name)
@@ -156,6 +151,28 @@ def get_ort_inputs(inputs, ort_inputs = {}, name = []):
         name.pop()
 
     return ort_inputs
+
+def save_npy_data(save_dir, data_dict):
+    save_dir = Path(save_dir)
+    if not save_dir.is_dir():
+        save_dir.mkdir()
+
+    for k, v in data_dict.items():
+        if isinstance(v, dict):
+            save_npy_data(save_dir, v)
+        else:
+            save_pth = save_dir / f"{k}.npy"
+            np.save(save_pth, np.array(v))
+
+    return
+
+def load_npy_data(save_pth):
+    data_dict = {}
+    data_pth_list = list(save_pth.glob('**/*.py'))
+    for data_pth in data_pth_list:
+        data_dict[data_pth.stem] = np.load(data_pth)
+
+    return data_dict
 
 def onnx_export(model, dataloader, save_dir, chk_pth, device, logger=None):
     save_dir = Path(save_dir)
