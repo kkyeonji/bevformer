@@ -28,7 +28,7 @@ def denormalize_bbox(normalized_bboxes, pc_range):
     rot_sine = normalized_bboxes[..., 6:7]
 
     rot_cosine = normalized_bboxes[..., 7:8]
-    rot = torch.atan2(rot_sine, rot_cosine)
+    rot = torch.atan2(rot_sine, rot_cosine) # TODO : exporting the operator atan2 to ONNX opset version 9 is not supported.
 
     # center in the bev
     cx = normalized_bboxes[..., 0:1]
