@@ -9,6 +9,7 @@ from pathlib import Path
 import copy
 import math
 from torchvision.transforms.functional import rotate
+import pickle
 
 
 class OnnxWrapper(nn.Module):
@@ -155,28 +156,27 @@ def get_ort_inputs(inputs, ort_inputs = {}, name = []):
 
     return ort_inputs
 
-def save_npy_data(save_dir, data_dict):
+def save_pkl_data(save_dir, data_dict):
     save_dir = Path(save_dir)
     if not save_dir.is_dir():
         save_dir.mkdir()
 
     for k, v in data_dict.items():
         if isinstance(v, dict):
-            save_npy_data(save_dir, v)
+            save_pkl_data(save_dir, v)
         else:
-            save_pth = save_dir / f"{k}.npy"
-            if isinstance(v, torch.Tensor):
-                v = v.cpu().detach()
-            np.save(save_pth, np.array(v), allow_pickle=True)
-
+            save_pth = save_dir / f"{k}.pickle"
+            with open(save_pth, 'wb') as f:
+                pickle.dump(v, f)
     return
 
-def load_npy_data(save_pth):
+def load_pkl_data(save_pth):
     data_dict = {}
     save_pth = Path(save_pth)
-    data_pth_list = list(save_pth.glob('**/*.npy'))
+    data_pth_list = list(save_pth.glob('**/*.pickle'))
     for data_pth in data_pth_list:
-        data_dict[data_pth.stem] = np.load(data_pth, allow_pickle=True)
+        with open(data_pth, 'rb') as f:
+            data_dict[data_pth.stem] = pickle.load(f)
 
     return data_dict
 
@@ -220,8 +220,6 @@ def onnx_export(model, dataloader, save_dir, chk_pth, device, logger=None):
 
     return
 
-from mmdet3d.core import bbox3d2result
-
 
 class TestWrapper(nn.Module):
     def __init__(self, model, batch):
@@ -229,16 +227,18 @@ class TestWrapper(nn.Module):
         model.eval()
         model.cuda()
         self.model = model
-        breakpoint()
+        self.metadata = {}
+
         org_batch = copy.deepcopy(batch)
         for k, v in org_batch.items():
-            if v.dtype == np.object_:
-                setattr(self, k, v.item())
+            if not isinstance(v, torch.Tensor):
                 batch.pop(k)
+                self.metadata[k] = v
 
-    def forward(self, **batch):
-        inter_states, inter_references = self.decoder(
-        **batch)
+    def forward(self, batch):
+        inter_states, inter_references = self.model.pts_bbox_head.transformer.decoder(
+        **batch,
+        **self.metadata)
         return inter_states
 
 def test_export(model, dataloader, save_dir, chk_pth, device, logger=None):
@@ -259,17 +259,18 @@ def test_export(model, dataloader, save_dir, chk_pth, device, logger=None):
         onnx_wrapper = OnnxWrapper(model, meta_data)
         # if you want to re-use input, you have to copy it.
         # it modified while forward()
-        output = onnx_wrapper(copy.deepcopy(input))
+        _ = onnx_wrapper(copy.deepcopy(input))
 
     # load numpy data
-    batch = load_npy_data('./debug/')
+    batch = load_pkl_data('./debug/')
     batch = load_gpu(batch)
 
     # export onnx for specified part of model to debug
     with torch.no_grad():
         onnx_wrapper = TestWrapper(model, batch)
-        breakpoint()
         batch = to_tensor(batch)
+        # test forward
+        onnx_output = onnx_wrapper(batch)
 
         torch.onnx.export(
             onnx_wrapper,
