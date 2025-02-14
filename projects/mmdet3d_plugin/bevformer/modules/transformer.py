@@ -275,21 +275,7 @@ class PerceptionTransformer(BaseModule):
         query = query.permute(1, 0, 2)
         query_pos = query_pos.permute(1, 0, 2)
         bev_embed = bev_embed.permute(1, 0, 2)
-        from projects.utils.onnx_utils import save_npy_data
-        save_npy_data(
-            './debug/',
-            {
-                'query': query,
-                'key': None,
-                'value': bev_embed,
-                'query_pos': query_pos,
-                'reference_points': reference_points,
-                'reg_branches': reg_branches,
-                'cls_branches': cls_branches,
-                'spatial_shapes': torch.tensor([[bev_h, bev_w]], device=query.device),
-                'level_start_index': torch.tensor([0], device=query.device),
-            }
-        )
+ 
         inter_states, inter_references = self.decoder(
             query=query,
             key=None,
