@@ -44,8 +44,8 @@ def to_numpy(x):
     elif isinstance(x, list):
         for e in x:
             e = to_numpy(e)
-    else:
-        AssertionError() # TODO
+    # else:
+    #     AssertionError() # TODO
     return x
 
 def to_tensor(x):
@@ -60,8 +60,8 @@ def to_tensor(x):
     elif isinstance(x, list):
         for e in x:
             e = to_tensor(e)
-    else:
-        AssertionError() # TODO
+    # else:
+    #     AssertionError() # TODO
     return x
 
 # deprecated  
@@ -165,15 +165,18 @@ def save_npy_data(save_dir, data_dict):
             save_npy_data(save_dir, v)
         else:
             save_pth = save_dir / f"{k}.npy"
-            np.save(save_pth, np.array(v))
+            if isinstance(v, torch.Tensor):
+                v = v.cpu().detach()
+            np.save(save_pth, np.array(v), allow_pickle=True)
 
     return
 
 def load_npy_data(save_pth):
     data_dict = {}
-    data_pth_list = list(save_pth.glob('**/*.py'))
+    save_pth = Path(save_pth)
+    data_pth_list = list(save_pth.glob('**/*.npy'))
     for data_pth in data_pth_list:
-        data_dict[data_pth.stem] = np.load(data_pth)
+        data_dict[data_pth.stem] = np.load(data_pth, allow_pickle=True)
 
     return data_dict
 
@@ -219,274 +222,60 @@ def onnx_export(model, dataloader, save_dir, chk_pth, device, logger=None):
 
 from mmdet3d.core import bbox3d2result
 
+
 class TestWrapper(nn.Module):
-    def __init__(self, model, meta_data):
+    def __init__(self, model, batch):
         super().__init__()
         model.eval()
         model.cuda()
         self.model = model
-        self.head = self.model.pts_bbox_head
-        self.transformer = self.model.pts_bbox_head.transformer
+        breakpoint()
+        org_batch = copy.deepcopy(batch)
+        for k, v in org_batch.items():
+            if v.dtype == np.object_:
+                setattr(self, k, v.item())
+                batch.pop(k)
 
-        self.meta_data = meta_data
-
-    def preprocess(self, img=None):
-        img_metas = self.meta_data
-        for var, name in [(img_metas, 'img_metas')]:
-            if not isinstance(var, list):
-                raise TypeError('{} must be a list, but got {}'.format(
-                    name, type(var)))
-
-        img = [img] if img is None else img
-
-        if img_metas[0][0]['scene_token'] != self.model.prev_frame_info['scene_token']:
-            # the first sample of each scene is truncated
-            self.model.prev_frame_info['prev_bev'] = None
-        # update idx
-        self.model.prev_frame_info['scene_token'] = img_metas[0][0]['scene_token']
-
-        # do not use temporal information
-        if not self.model.video_test_mode:
-            self.model.prev_frame_info['prev_bev'] = None
-
-        # Get the delta of ego position and angle between two timestamps.
-        tmp_pos = copy.deepcopy(img_metas[0][0]['can_bus'][:3])
-        tmp_angle = copy.deepcopy(img_metas[0][0]['can_bus'][-1])
-        if self.model.prev_frame_info['prev_bev'] is not None:
-            img_metas[0][0]['can_bus'][:3] -= self.model.prev_frame_info['prev_pos']
-            img_metas[0][0]['can_bus'][-1] -= self.model.prev_frame_info['prev_angle']
-        else:
-            img_metas[0][0]['can_bus'][-1] = 0
-            img_metas[0][0]['can_bus'][:3] = 0
-
-        img_feats = self.model.extract_feat(img=img[0], img_metas=img_metas[0])
-
-        bs, num_cam, _, _, _ = img_feats[0].shape
-        dtype = img_feats[0].dtype
-        object_query_embeds = self.head.query_embedding.weight.to(dtype)
-        bev_queries = self.head.bev_embedding.weight.to(dtype)
-
-        bev_mask = torch.zeros((bs, self.head.bev_h, self.head.bev_w),
-                               device=bev_queries.device).to(dtype)
-        bev_pos = self.head.positional_encoding(bev_mask).to(dtype)
-
-        # get_bev_features
-        bev_h = self.head.bev_h
-        bev_w = self.head.bev_w
-        grid_length=(self.head.real_h / self.head.bev_h,
-                        self.head.real_w / self.head.bev_w)
-        prev_bev = self.model.prev_frame_info['prev_bev']
-        img_metas = self.meta_data
-
-        bs = img_feats[0].size(0)
-        bev_queries = bev_queries.unsqueeze(1).repeat(1, bs, 1)
-        bev_pos = bev_pos.flatten(2).permute(2, 0, 1)
-        
-        # obtain rotation angle and shift with ego motion
-        delta_x = np.array([each['can_bus'][0]
-                           for each in img_metas[0]])
-        delta_y = np.array([each['can_bus'][1]
-                           for each in img_metas[0]])
-        ego_angle = np.array(
-            [each['can_bus'][-2] / np.pi * 180 for each in img_metas[0]])
-        grid_length_y = grid_length[0]
-        grid_length_x = grid_length[1]
-        translation_length = np.sqrt(delta_x ** 2 + delta_y ** 2)
-        translation_angle = np.arctan2(delta_y, delta_x) / math.pi * 180
-        bev_angle = ego_angle - translation_angle
-        shift_y = translation_length * \
-            np.cos(bev_angle / 180 * math.pi) / grid_length_y / bev_h
-        shift_x = translation_length * \
-            np.sin(bev_angle / 180 * math.pi) / grid_length_x / bev_w
-        shift_y = shift_y * self.transformer.use_shift
-        shift_x = shift_x * self.transformer.use_shift
-        shift = bev_queries.new_tensor(
-            [shift_x, shift_y]).permute(1, 0)  # xy, bs -> bs, xy
-
-        if prev_bev is not None:
-            if prev_bev.shape[1] == bev_h * bev_w:
-                prev_bev = prev_bev.permute(1, 0, 2)
-            if self.transformer.rotate_prev_bev:
-                for i in range(bs):
-                    # num_prev_bev = prev_bev.size(1)
-                    rotation_angle = img_metas[0][i]['can_bus'][-1]
-                    tmp_prev_bev = prev_bev[:, i].reshape(
-                        bev_h, bev_w, -1).permute(2, 0, 1)
-                    tmp_prev_bev = rotate(tmp_prev_bev, rotation_angle,
-                                          center=self.transformer.rotate_center)
-                    tmp_prev_bev = tmp_prev_bev.permute(1, 2, 0).reshape(
-                        bev_h * bev_w, 1, -1)
-                    prev_bev[:, i] = tmp_prev_bev[:, 0]
-
-        # add can bus signals
-        can_bus = bev_queries.new_tensor(
-            [each['can_bus'] for each in img_metas[0]])  # [:, :]
-        can_bus = self.transformer.can_bus_mlp(can_bus)[None, :, :]
-        bev_queries = bev_queries + can_bus * self.transformer.use_can_bus
-
-        feat_flatten = []
-        spatial_shapes = []
-        for lvl, feat in enumerate(img_feats):
-            bs, num_cam, c, h, w = feat.shape
-            spatial_shape = (h, w)
-            feat = feat.flatten(3).permute(1, 0, 3, 2)
-            if self.transformer.use_cams_embeds:
-                feat = feat + self.transformer.cams_embeds[:, None, None, :].to(feat.dtype)
-            feat = feat + self.transformer.level_embeds[None,
-                                            None, lvl:lvl + 1, :].to(feat.dtype)
-            spatial_shapes.append(spatial_shape)
-            feat_flatten.append(feat)
-
-        feat_flatten = torch.cat(feat_flatten, 2)
-        spatial_shapes = torch.as_tensor(
-            spatial_shapes, dtype=torch.long, device=bev_pos.device)
-        level_start_index = torch.cat((spatial_shapes.new_zeros(
-            (1,)), spatial_shapes.prod(1).cumsum(0)[:-1]))
-
-        feat_flatten = feat_flatten.permute(
-            0, 2, 1, 3)  # (num_cam, H*W, bs, embed_dims)
-
-        return feat_flatten, bev_queries, spatial_shapes, level_start_index, bev_pos
-
-    def get_bev_features(
-            self,
-            mlvl_feats,
-            bev_queries,
-            bev_h,
-            bev_w,
-            grid_length=[0.512, 0.512],
-            bev_pos=None,
-            prev_bev=None,
-            **kwargs):
-        """
-        obtain bev features.
-        """
-        bs = mlvl_feats[0].size(0)
-        bev_queries = bev_queries.unsqueeze(1).repeat(1, bs, 1)
-        bev_pos = bev_pos.flatten(2).permute(2, 0, 1)
-        
-        # obtain rotation angle and shift with ego motion
-        delta_x = np.array([each['can_bus'][0]
-                           for each in kwargs['img_metas']])
-        delta_y = np.array([each['can_bus'][1]
-                           for each in kwargs['img_metas']])
-        ego_angle = np.array(
-            [each['can_bus'][-2] / math.pi * 180 for each in kwargs['img_metas']])
-        grid_length_y = grid_length[0]
-        grid_length_x = grid_length[1]
-        translation_length = np.sqrt(delta_x ** 2 + delta_y ** 2)
-        translation_angle = np.arctan2(delta_y, delta_x) / math.pi * 180
-        bev_angle = ego_angle - translation_angle
-        shift_y = translation_length * \
-            np.cos(bev_angle / 180 * math.pi) / grid_length_y / bev_h
-        shift_x = translation_length * \
-            np.sin(bev_angle / 180 * math.pi) / grid_length_x / bev_w
-        shift_y = shift_y * self.transformer.use_shift
-        shift_x = shift_x * self.transformer.use_shift
-        shift = bev_queries.new_tensor(
-            [shift_x, shift_y]).permute(1, 0)  # xy, bs -> bs, xy
-
-        if prev_bev is not None:
-            if prev_bev.shape[1] == bev_h * bev_w:
-                prev_bev = prev_bev.permute(1, 0, 2)
-            if self.transformer.rotate_prev_bev:
-                for i in range(bs):
-                    # num_prev_bev = prev_bev.size(1)
-                    rotation_angle = kwargs['img_metas'][i]['can_bus'][-1]
-                    tmp_prev_bev = prev_bev[:, i].reshape(
-                        bev_h, bev_w, -1).permute(2, 0, 1)
-                    tmp_prev_bev = rotate(tmp_prev_bev, rotation_angle,
-                                          center=self.transformer.rotate_center)
-                    tmp_prev_bev = tmp_prev_bev.permute(1, 2, 0).reshape(
-                        bev_h * bev_w, 1, -1)
-                    prev_bev[:, i] = tmp_prev_bev[:, 0]
-
-        # add can bus signals
-        can_bus = bev_queries.new_tensor(
-            [each['can_bus'] for each in kwargs['img_metas']])  # [:, :]
-        can_bus = self.transformer.can_bus_mlp(can_bus)[None, :, :]
-        bev_queries = bev_queries + can_bus * self.transformer.use_can_bus
-
-        feat_flatten = []
-        spatial_shapes = []
-        for lvl, feat in enumerate(mlvl_feats):
-            bs, num_cam, c, h, w = feat.shape
-            spatial_shape = (h, w)
-            feat = feat.flatten(3).permute(1, 0, 3, 2)
-            if self.transformer.use_cams_embeds:
-                feat = feat + self.transformer.cams_embeds[:, None, None, :].to(feat.dtype)
-            feat = feat + self.transformer.level_embeds[None,
-                                            None, lvl:lvl + 1, :].to(feat.dtype)
-            spatial_shapes.append(spatial_shape)
-            feat_flatten.append(feat)
-
-        feat_flatten = torch.cat(feat_flatten, 2)
-        spatial_shapes = torch.as_tensor(
-            spatial_shapes, dtype=torch.long, device=bev_pos.device)
-        level_start_index = torch.cat((spatial_shapes.new_zeros(
-            (1,)), spatial_shapes.prod(1).cumsum(0)[:-1]))
-
-        feat_flatten = feat_flatten.permute(
-            0, 2, 1, 3)  # (num_cam, H*W, bs, embed_dims)
-
-        bev_embed = self.transformer.encoder(
-            bev_queries,
-            feat_flatten,
-            feat_flatten,
-            bev_h=bev_h,
-            bev_w=bev_w,
-            bev_pos=bev_pos,
-            spatial_shapes=spatial_shapes,
-            level_start_index=level_start_index,
-            prev_bev=prev_bev,
-            shift=shift,
-            **kwargs
-        )
-
-        return bev_embed
-    
-
-    def forward(self, img, feat_flatten, bev_queries, spatial_shapes, level_start_index, bev_pos):
-        bev_h = self.head.bev_h
-        bev_w = self.head.bev_w
-        bev_embed = self.transformer.encoder(
-            bev_queries,
-            feat_flatten,
-            feat_flatten,
-            bev_h=bev_h,
-            bev_w=bev_w,
-            bev_pos=bev_pos,
-            spatial_shapes=spatial_shapes,
-            level_start_index=level_start_index,
-            prev_bev = self.model.prev_frame_info['prev_bev'],
-            shift=shift,
-            **kwargs
-        )
-        return bev_embed
+    def forward(self, **batch):
+        inter_states, inter_references = self.decoder(
+        **batch)
+        return inter_states
 
 def test_export(model, dataloader, save_dir, chk_pth, device, logger=None):
+    # set path to save test.onnx
     save_dir = Path(save_dir)
     chk_pth = Path(chk_pth)
     if not save_dir.is_dir():
         save_dir.mkdir()
     onnx_save_pth = save_dir / chk_pth.stem
 
+    # save numpy data used while debugging
     batch = next(iter(dataloader))
     batch = load_gpu(batch)
-    ort_inputs = get_ort_inputs(batch)
-    
     input = get_continer_data(batch['img'])
-    meta_data = get_continer_data(batch['img_metas']) 
+    meta_data = get_continer_data(batch['img_metas'])
+
     with torch.no_grad():
-        onnx_wrapper = TestWrapper(model, meta_data)
-        img_feats, bev_queries, bev_pos = onnx_wrapper.preprocess(copy.deepcopy(input))
+        onnx_wrapper = OnnxWrapper(model, meta_data)
+        # if you want to re-use input, you have to copy it.
+        # it modified while forward()
+        output = onnx_wrapper(copy.deepcopy(input))
+
+    # load numpy data
+    batch = load_npy_data('./debug/')
+    batch = load_gpu(batch)
+
+    # export onnx for specified part of model to debug
+    with torch.no_grad():
+        onnx_wrapper = TestWrapper(model, batch)
+        breakpoint()
+        batch = to_tensor(batch)
 
         torch.onnx.export(
             onnx_wrapper,
-            args = (input, img_feats, bev_queries, bev_pos, {}),
+            args = (batch, {}),
             f = onnx_save_pth,
-            # input_names = list(ort_inputs.keys()),
-            # opset_version = 16,
+            opset_version = 13,
             verbose = True,
         )
     print("Onnx Export Suceed")

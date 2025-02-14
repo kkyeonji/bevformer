@@ -134,8 +134,11 @@ class PerceptionTransformer(BaseModule):
             np.cos(bev_angle / 180 * np.pi) / grid_length_y / bev_h
         shift_x = translation_length * \
             np.sin(bev_angle / 180 * np.pi) / grid_length_x / bev_w
-        shift_y = shift_y * self.use_shift
-        shift_x = shift_x * self.use_shift
+
+        # transfer self.use_shift to np.array to avoid error when onnx export
+        # ndarray * bool not available
+        shift_y = shift_y * np.array(self.use_shift, dtype=shift_y.dtype)
+        shift_x = shift_x * np.array(self.use_shift, dtype=shift_x.dtype)
         shift = bev_queries.new_tensor(
             [shift_x, shift_y]).permute(1, 0)  # xy, bs -> bs, xy
 
@@ -158,7 +161,9 @@ class PerceptionTransformer(BaseModule):
         can_bus = bev_queries.new_tensor(
             [each['can_bus'] for each in kwargs['img_metas']])  # [:, :]
         can_bus = self.can_bus_mlp(can_bus)[None, :, :]
-        bev_queries = bev_queries + can_bus * self.use_can_bus
+        # transfer self.use_can_bus to torch.tensor to avoid error when onnx export
+        # torch.tensor * bool not available
+        bev_queries = bev_queries + can_bus * torch.tensor(self.use_can_bus, dtype=can_bus.dtype)
 
         feat_flatten = []
         spatial_shapes = []
@@ -270,7 +275,21 @@ class PerceptionTransformer(BaseModule):
         query = query.permute(1, 0, 2)
         query_pos = query_pos.permute(1, 0, 2)
         bev_embed = bev_embed.permute(1, 0, 2)
-
+        from projects.utils.onnx_utils import save_npy_data
+        save_npy_data(
+            './debug/',
+            {
+                'query': query,
+                'key': None,
+                'value': bev_embed,
+                'query_pos': query_pos,
+                'reference_points': reference_points,
+                'reg_branches': reg_branches,
+                'cls_branches': cls_branches,
+                'spatial_shapes': torch.tensor([[bev_h, bev_w]], device=query.device),
+                'level_start_index': torch.tensor([0], device=query.device),
+            }
+        )
         inter_states, inter_references = self.decoder(
             query=query,
             key=None,

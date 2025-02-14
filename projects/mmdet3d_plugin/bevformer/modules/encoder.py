@@ -59,12 +59,19 @@ class BEVFormerEncoder(TransformerLayerSequence):
 
         # reference points in 3D space, used in spatial cross-attention (SCA)
         if dim == '3d':
-            zs = torch.linspace(0.5, Z - 0.5, num_points_in_pillar, dtype=dtype,
-                                device=device).view(-1, 1, 1).expand(num_points_in_pillar, H, W) / Z
-            xs = torch.linspace(0.5, W - 0.5, W, dtype=dtype,
-                                device=device).view(1, 1, W).expand(num_points_in_pillar, H, W) / W
-            ys = torch.linspace(0.5, H - 0.5, H, dtype=dtype,
-                                device=device).view(1, H, 1).expand(num_points_in_pillar, H, W) / H
+            # zs = torch.linspace(0.5, Z - 0.5, num_points_in_pillar, dtype=dtype,
+            #                     device=device).view(-1, 1, 1).expand(num_points_in_pillar, H, W) / Z
+            # xs = torch.linspace(0.5, W - 0.5, W, dtype=dtype,
+            #                     device=device).view(1, 1, W).expand(num_points_in_pillar, H, W) / W
+            # ys = torch.linspace(0.5, H - 0.5, H, dtype=dtype,
+            #                     device=device).view(1, H, 1).expand(num_points_in_pillar, H, W) / H
+            
+            zs = torch.arange(0.5, Z - 0.5, (Z - 0.5 - 0.5) / num_points_in_pillar, dtype=dtype,
+                  device=device).view(-1, 1, 1).expand(num_points_in_pillar, H, W) / Z
+            xs = torch.arange(0.5, W - 0.5, (W - 0.5 - 0.5) / W, dtype=dtype,
+                            device=device).view(1, 1, W).expand(num_points_in_pillar, H, W) / W
+            ys = torch.arange(0.5, H - 0.5, (H - 0.5 - 0.5) / H, dtype=dtype,
+                            device=device).view(1, H, 1).expand(num_points_in_pillar, H, W) / H
             ref_3d = torch.stack((xs, ys, zs), -1)
             ref_3d = ref_3d.permute(0, 3, 1, 2).flatten(2).permute(0, 2, 1)
             ref_3d = ref_3d[None].repeat(bs, 1, 1, 1)
@@ -72,11 +79,17 @@ class BEVFormerEncoder(TransformerLayerSequence):
 
         # reference points on 2D bev plane, used in temporal self-attention (TSA).
         elif dim == '2d':
+            # ref_y, ref_x = torch.meshgrid(
+            #     torch.linspace(
+            #         0.5, H - 0.5, H, dtype=dtype, device=device),
+            #     torch.linspace(
+            #         0.5, W - 0.5, W, dtype=dtype, device=device)
+            # )
             ref_y, ref_x = torch.meshgrid(
-                torch.linspace(
-                    0.5, H - 0.5, H, dtype=dtype, device=device),
-                torch.linspace(
-                    0.5, W - 0.5, W, dtype=dtype, device=device)
+                torch.arange(0.5, H - 0.5, (H - 0.5 - 0.5) / H,
+                              dtype=dtype, device=device),
+                torch.arange(0.5, W - 0.5, (W - 0.5 - 0.5) / W,
+                              dtype=dtype, device=device)
             )
             ref_y = ref_y.reshape(-1)[None] / H
             ref_x = ref_x.reshape(-1)[None] / W
@@ -124,7 +137,7 @@ class BEVFormerEncoder(TransformerLayerSequence):
         eps = 1e-5
 
         bev_mask = (reference_points_cam[..., 2:3] > eps)
-        reference_points_cam = reference_points_cam[..., 0:2] / torch.maximum(
+        reference_points_cam = reference_points_cam[..., 0:2] / torch.max(
             reference_points_cam[..., 2:3], torch.ones_like(reference_points_cam[..., 2:3]) * eps)
 
         reference_points_cam[..., 0] /= img_metas[0]['img_shape'][0][1]
@@ -134,12 +147,21 @@ class BEVFormerEncoder(TransformerLayerSequence):
                     & (reference_points_cam[..., 1:2] < 1.0)
                     & (reference_points_cam[..., 0:1] < 1.0)
                     & (reference_points_cam[..., 0:1] > 0.0))
+        
+        # if digit_version(TORCH_VERSION) >= digit_version('1.8'):
+        #     _bev_mask = torch.nan_to_num(bev_mask)
+        # else:
+        #     _bev_mask = bev_mask.new_tensor(
+        #         np.nan_to_num(bev_mask.cpu().numpy()))
+
         if digit_version(TORCH_VERSION) >= digit_version('1.8'):
-            bev_mask = torch.nan_to_num(bev_mask)
+            # NaN 값을 0으로 대체 (기본적으로 NaN 값을 0으로 변경)
+            bev_mask = torch.where(torch.isnan(bev_mask), torch.tensor(0.0, dtype=bev_mask.dtype, device=bev_mask.device), bev_mask)
         else:
             bev_mask = bev_mask.new_tensor(
-                np.nan_to_num(bev_mask.cpu().numpy()))
-
+                np.nan_to_num(bev_mask.cpu().numpy())
+        )
+  
         reference_points_cam = reference_points_cam.permute(2, 1, 3, 0, 4)
         bev_mask = bev_mask.permute(2, 1, 3, 0, 4).squeeze(-1)
 
