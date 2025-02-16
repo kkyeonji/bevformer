@@ -10,6 +10,7 @@ import copy
 import math
 from torchvision.transforms.functional import rotate
 import pickle
+from projects.mmdet3d_plugin.bevformer.modules.decoder import inverse_sigmoid
 
 
 class OnnxWrapper(nn.Module):
@@ -166,6 +167,12 @@ def save_pkl_data(save_dir, data_dict):
             save_pkl_data(save_dir, v)
         else:
             save_pth = save_dir / f"{k}.pickle"
+            if isinstance(v, torch.Tensor):
+                # v.requires_grad = False
+                v = v.detach()
+            elif isinstance(v, nn.ModuleList):
+                for p in v.parameters():
+                    p.requires_grad = False
             with open(save_pth, 'wb') as f:
                 pickle.dump(v, f)
     return
@@ -236,10 +243,65 @@ class TestWrapper(nn.Module):
                 self.metadata[k] = v
 
     def forward(self, batch):
-        inter_states, inter_references = self.model.pts_bbox_head.transformer.decoder(
-        **batch,
-        **self.metadata)
-        return inter_states
+        # inter_states, inter_references = self.model.pts_bbox_head.transformer.decoder(
+        # **batch,
+        # **self.metadata)
+        query =  batch['query']
+        reference_points = batch['reference_points']
+        reg_branches = self.metadata['reg_branches']
+        key_padding_mask = None
+
+        args = ()
+        kwargs = {
+            'spatial_shapes': batch['spatial_shapes'],
+            'value': batch['value'],
+            'level_start_index': batch['level_start_index'],
+            'query_pos': batch['query_pos'],
+            'img_metas': self.metadata['img_metas'],
+            'cls_branches': self.metadata['cls_branches'],
+            'key': self.metadata['key'],
+        }
+
+        output = query
+        intermediate = []
+        intermediate_reference_points = []
+
+        for lid, layer in enumerate(self.model.pts_bbox_head.transformer.decoder.layers):
+            reference_points_input = reference_points[..., :2].unsqueeze(
+                2)  # BS NUM_QUERY NUM_LEVEL 2
+            output = layer(
+                output,
+                *args,
+                reference_points=reference_points_input,
+                key_padding_mask=key_padding_mask,
+                **kwargs)
+            # output = output.permute(1, 0, 2)
+
+        #     if reg_branches is not None:
+        #         tmp = reg_branches[lid](output)
+
+        #         assert reference_points.shape[-1] == 3
+
+        #         new_reference_points = torch.zeros_like(reference_points)
+        #         new_reference_points[..., :2] = tmp[
+        #             ..., :2] + inverse_sigmoid(reference_points[..., :2])
+        #         new_reference_points[..., 2:3] = tmp[
+        #             ..., 4:5] + inverse_sigmoid(reference_points[..., 2:3])
+
+        #         new_reference_points = new_reference_points.sigmoid()
+
+        #         reference_points = new_reference_points.detach()
+
+            # output = output.permute(1, 0, 2)
+        #     if self.model.pts_bbox_head.transformer.decoder.return_intermediate:
+        #         intermediate.append(output)
+        #         intermediate_reference_points.append(reference_points)
+
+        # if self.model.pts_bbox_head.transformer.decoder.return_intermediate:
+        #     return torch.stack(intermediate), torch.stack(
+        #         intermediate_reference_points)
+
+        return output, reference_points
 
 def test_export(model, dataloader, save_dir, chk_pth, device, logger=None):
     # set path to save test.onnx
@@ -262,13 +324,14 @@ def test_export(model, dataloader, save_dir, chk_pth, device, logger=None):
         _ = onnx_wrapper(copy.deepcopy(input))
 
     # load numpy data
-    batch = load_pkl_data('./debug/')
+    batch = load_pkl_data('./debug/decode/')
     batch = load_gpu(batch)
 
     # export onnx for specified part of model to debug
     with torch.no_grad():
         onnx_wrapper = TestWrapper(model, batch)
         batch = to_tensor(batch)
+
         # test forward
         onnx_output = onnx_wrapper(batch)
 
