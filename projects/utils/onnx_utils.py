@@ -11,6 +11,8 @@ import math
 from torchvision.transforms.functional import rotate
 import pickle
 from projects.mmdet3d_plugin.bevformer.modules.decoder import inverse_sigmoid
+from mmdet3d.core import bbox3d2result
+from projects.utils.onnx_symbolic_funtion import register_custom_symbolic_functions
 
 
 class OnnxWrapper(nn.Module):
@@ -22,15 +24,81 @@ class OnnxWrapper(nn.Module):
 
             self.meta_data = meta_data
 
+        def simple_test_pts(self, x, img_metas, prev_bev=None, rescale=False):
+            """Test function"""
+            outs = self.model.pts_bbox_head(x, img_metas, prev_bev=prev_bev)
+
+            bbox_list = self.model.pts_bbox_head.get_bboxes(
+                outs, img_metas, rescale=rescale)
+            # bbox_results = [
+            #     bbox3d2result(bboxes, scores, labels)
+            #     for bboxes, scores, labels in bbox_list
+            # ]
+            return outs, bbox_list # outs['bev_embed'], bbox_results
+        
+        def simple_test(self, img_metas, img=None, prev_bev=None, rescale=False):
+            """Test function without augmentaiton."""
+            img_feats = self.model.extract_feat(img=img, img_metas=img_metas)
+
+            bbox_list = [dict() for i in range(len(img_metas))]
+            new_prev_bev, bbox_pts = self.model.simple_test_pts(
+                img_feats, img_metas, prev_bev, rescale=rescale)
+            # for result_dict, pts_bbox in zip(bbox_list, bbox_pts):
+            #     result_dict['pts_bbox'] = pts_bbox
+            return new_prev_bev, bbox_pts
+            
+        def forward_test(self, img_metas, img=None, **kwargs):
+            for var, name in [(img_metas, 'img_metas')]:
+                if not isinstance(var, list):
+                    raise TypeError('{} must be a list, but got {}'.format(
+                        name, type(var)))
+
+            img = [img] if img is None else img
+
+            if img_metas[0][0]['scene_token'] != self.model.prev_frame_info['scene_token']:
+                # the first sample of each scene is truncated
+                self.model.prev_frame_info['prev_bev'] = None
+            # update idx
+            self.model.prev_frame_info['scene_token'] = img_metas[0][0]['scene_token']
+
+            # do not use temporal information
+            if not self.model.video_test_mode:
+                self.model.prev_frame_info['prev_bev'] = None
+
+            # Get the delta of ego position and angle between two timestamps.
+            tmp_pos = copy.deepcopy(img_metas[0][0]['can_bus'][:3])
+            tmp_angle = copy.deepcopy(img_metas[0][0]['can_bus'][-1])
+            if self.model.prev_frame_info['prev_bev'] is not None:
+                img_metas[0][0]['can_bus'][:3] -= self.model.prev_frame_info['prev_pos']
+                img_metas[0][0]['can_bus'][-1] -= self.model.prev_frame_info['prev_angle']
+            else:
+                img_metas[0][0]['can_bus'][-1] = 0
+                img_metas[0][0]['can_bus'][:3] = 0
+
+            new_prev_bev, bbox_results = self.model.simple_test(
+                img_metas[0], img[0], prev_bev=self.model.prev_frame_info['prev_bev'], **kwargs)
+            # During inference, we save the BEV features and ego motion of each timestamp.
+            self.model.prev_frame_info['prev_pos'] = tmp_pos
+            self.model.prev_frame_info['prev_angle'] = tmp_angle
+            self.model.prev_frame_info['prev_bev'] = new_prev_bev
+            return bbox_results
+
         def forward(self, input):
+            self.model.simple_test_pts = self.simple_test_pts
+            self.model.simple_test = self.simple_test
+            self.model.forward_test = self.forward_test
             forward_input = {'img': input,'img_metas': self.meta_data}
             return self.model.forward(return_loss=False, **forward_input)
+
+        # def forward(self, input):
+        #     forward_input = {'img': input,'img_metas': self.meta_data}
+        #     return self.model.forward(return_loss=False, **forward_input)
         
-        def post_processing(onnx_output):
-            # Modify data format from onnx from to torch form
-            torch_output = {}
-            # TODO
-            return torch_output
+        # def post_processing(onnx_output):
+        #     # Modify data format from onnx from to torch form
+        #     torch_output = {}
+        #     # TODO
+        #     return torch_output
         
 
 def to_numpy(x):
@@ -204,13 +272,17 @@ def onnx_export(model, dataloader, save_dir, chk_pth, device, logger=None):
     #  'pcd_vertical_flip', 'box_mode_3d', 'box_type_3d', 'img_norm_cfg',
     #  'sample_idx', 'prev_idx', 'next_idx', 'pcd_scale_factor', 'pts_filename',
     #  'scene_token', 'can_bus']
+
     input = get_continer_data(batch['img'])
     meta_data = get_continer_data(batch['img_metas'])
+
+    register_custom_symbolic_functions(13)
+
     with torch.no_grad():
         onnx_wrapper = OnnxWrapper(model, meta_data)
         # if you want to re-use input, you have to copy it.
         # it modified while forward()
-        output = onnx_wrapper(copy.deepcopy(input))
+        # output = onnx_wrapper(copy.deepcopy(input))
 
         torch.onnx.export(
             onnx_wrapper,
@@ -229,79 +301,85 @@ def onnx_export(model, dataloader, save_dir, chk_pth, device, logger=None):
 
 
 class TestWrapper(nn.Module):
-    def __init__(self, model, batch):
+    def __init__(self, model, metadata, batch):
         super().__init__()
         model.eval()
         model.cuda()
         self.model = model
-        self.metadata = {}
+        self.meta_data = metadata
+        # self.meta_data = {'img_metas': metadata}
 
-        org_batch = copy.deepcopy(batch)
-        for k, v in org_batch.items():
-            if not isinstance(v, torch.Tensor):
-                batch.pop(k)
-                self.metadata[k] = v
+        # org_batch = copy.deepcopy(batch)
+        # for k, v in org_batch.items():
+        #     if not isinstance(v, torch.Tensor):
+        #         batch.pop(k)
+        #         self.meta_data[k] = v
+    
+    def simple_test_pts(self, x, img_metas, prev_bev=None, rescale=False):
+        """Test function"""
+        outs = self.pts_bbox_head(x, img_metas, prev_bev=prev_bev)
+
+        # bbox_list = self.pts_bbox_head.get_bboxes(
+        #     outs, img_metas, rescale=rescale)
+        # bbox_results = [
+        #     bbox3d2result(bboxes, scores, labels)
+        #     for bboxes, scores, labels in bbox_list
+        # ]
+        return outs, None #outs['bev_embed'], bbox_results
+    
+    def simple_test(self, img_metas, img=None, prev_bev=None, rescale=False):
+        """Test function without augmentaiton."""
+        img_feats = self.extract_feat(img=img, img_metas=img_metas)
+
+        bbox_list = [dict() for i in range(len(img_metas))]
+        new_prev_bev, bbox_pts = self.simple_test_pts(
+            img_feats, img_metas, prev_bev, rescale=rescale)
+        # for result_dict, pts_bbox in zip(bbox_list, bbox_pts):
+        #     result_dict['pts_bbox'] = pts_bbox
+        return new_prev_bev, bbox_list
+    
+    def forward_test(self, img_metas, img=None, **kwargs):
+        for var, name in [(img_metas, 'img_metas')]:
+            if not isinstance(var, list):
+                raise TypeError('{} must be a list, but got {}'.format(
+                    name, type(var)))
+
+        img = [img] if img is None else img
+
+        if img_metas[0][0]['scene_token'] != self.model.prev_frame_info['scene_token']:
+            # the first sample of each scene is truncated
+            self.model.prev_frame_info['prev_bev'] = None
+        # update idx
+        self.model.prev_frame_info['scene_token'] = img_metas[0][0]['scene_token']
+
+        # do not use temporal information
+        if not self.model.video_test_mode:
+            self.model.prev_frame_info['prev_bev'] = None
+
+        # Get the delta of ego position and angle between two timestamps.
+        tmp_pos = copy.deepcopy(img_metas[0][0]['can_bus'][:3])
+        tmp_angle = copy.deepcopy(img_metas[0][0]['can_bus'][-1])
+        if self.model.prev_frame_info['prev_bev'] is not None:
+            img_metas[0][0]['can_bus'][:3] -= self.model.prev_frame_info['prev_pos']
+            img_metas[0][0]['can_bus'][-1] -= self.model.prev_frame_info['prev_angle']
+        else:
+            img_metas[0][0]['can_bus'][-1] = 0
+            img_metas[0][0]['can_bus'][:3] = 0
+
+        new_prev_bev, bbox_results = self.model.simple_test(
+            img_metas[0], img[0], prev_bev=self.model.prev_frame_info['prev_bev'], **kwargs)
+        # During inference, we save the BEV features and ego motion of each timestamp.
+        self.model.prev_frame_info['prev_pos'] = tmp_pos
+        self.model.prev_frame_info['prev_angle'] = tmp_angle
+        self.model.prev_frame_info['prev_bev'] = new_prev_bev
+        return bbox_results
 
     def forward(self, batch):
-        # inter_states, inter_references = self.model.pts_bbox_head.transformer.decoder(
-        # **batch,
-        # **self.metadata)
-        query =  batch['query']
-        reference_points = batch['reference_points']
-        reg_branches = self.metadata['reg_branches']
-        key_padding_mask = None
-
-        args = ()
-        kwargs = {
-            'spatial_shapes': batch['spatial_shapes'],
-            'value': batch['value'],
-            'level_start_index': batch['level_start_index'],
-            'query_pos': batch['query_pos'],
-            'img_metas': self.metadata['img_metas'],
-            'cls_branches': self.metadata['cls_branches'],
-            'key': self.metadata['key'],
-        }
-
-        output = query
-        intermediate = []
-        intermediate_reference_points = []
-
-        for lid, layer in enumerate(self.model.pts_bbox_head.transformer.decoder.layers):
-            reference_points_input = reference_points[..., :2].unsqueeze(
-                2)  # BS NUM_QUERY NUM_LEVEL 2
-            output = layer(
-                output,
-                *args,
-                reference_points=reference_points_input,
-                key_padding_mask=key_padding_mask,
-                **kwargs)
-            # output = output.permute(1, 0, 2)
-
-        #     if reg_branches is not None:
-        #         tmp = reg_branches[lid](output)
-
-        #         assert reference_points.shape[-1] == 3
-
-        #         new_reference_points = torch.zeros_like(reference_points)
-        #         new_reference_points[..., :2] = tmp[
-        #             ..., :2] + inverse_sigmoid(reference_points[..., :2])
-        #         new_reference_points[..., 2:3] = tmp[
-        #             ..., 4:5] + inverse_sigmoid(reference_points[..., 2:3])
-
-        #         new_reference_points = new_reference_points.sigmoid()
-
-        #         reference_points = new_reference_points.detach()
-
-            # output = output.permute(1, 0, 2)
-        #     if self.model.pts_bbox_head.transformer.decoder.return_intermediate:
-        #         intermediate.append(output)
-        #         intermediate_reference_points.append(reference_points)
-
-        # if self.model.pts_bbox_head.transformer.decoder.return_intermediate:
-        #     return torch.stack(intermediate), torch.stack(
-        #         intermediate_reference_points)
-
-        return output, reference_points
+        self.model.simple_test_pts = self.simple_test_pts
+        self.model.simple_test = self.simple_test
+        self.model.forward_test = self.forward_test
+        forward_input = {'img': batch,'img_metas': self.meta_data}
+        return self.model.forward(return_loss=False, **forward_input)
 
 def test_export(model, dataloader, save_dir, chk_pth, device, logger=None):
     # set path to save test.onnx
@@ -324,12 +402,12 @@ def test_export(model, dataloader, save_dir, chk_pth, device, logger=None):
         _ = onnx_wrapper(copy.deepcopy(input))
 
     # load numpy data
-    batch = load_pkl_data('./debug/decode/')
+    batch = load_pkl_data('./debug/decoder/')
     batch = load_gpu(batch)
 
     # export onnx for specified part of model to debug
     with torch.no_grad():
-        onnx_wrapper = TestWrapper(model, batch)
+        onnx_wrapper = TestWrapper(model, meta_data, batch)
         batch = to_tensor(batch)
 
         # test forward

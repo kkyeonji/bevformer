@@ -30,7 +30,7 @@ from projects.utils.test_utils import custom_single_gpu_test
 def parse_args():
     parser = argparse.ArgumentParser(
         description='MMDet test (and eval) a model')
-    parser.add_argument('config', help='test config file path')
+    parser.add_argument('--config', help='test config file path')
    
     args = parser.parse_args()
     
@@ -135,8 +135,8 @@ def main():
 
     # model = MMDataParallel(model, device_ids=[0])
     # outputs = custom_single_gpu_test(model, data_loader)
-    # onnx_export(model, data_loader, cfg.onnx_file_dir, cfg.checkpoint, cfg.device)
-    test_export(model, data_loader, cfg.onnx_file_dir, cfg.checkpoint, cfg.device)
+    onnx_export(model, data_loader, cfg.onnx_file_dir, cfg.checkpoint, cfg.device)
+    # test_export(model, data_loader, cfg.onnx_file_dir, cfg.checkpoint, cfg.device)
 
 
     # TODO
